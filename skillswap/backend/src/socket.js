@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const db = require('./db');
+const { supabase } = require('./db');
 
 const onlineUsers = new Map();
 
@@ -25,18 +25,16 @@ const initSocket = (io) => {
     socket.on('send_message', async (data) => {
       try {
         const { receiver_id, content, booking_id, file_url, file_name, file_type } = data;
-        const result = await db.query(
-          `INSERT INTO messages (sender_id, receiver_id, booking_id, content, file_url, file_name, file_type)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-          [socket.userId, receiver_id, booking_id || null, content, file_url || null, file_name || null, file_type || null]
-        );
-        const message = result.rows[0];
+        const { data: message } = await supabase.from('messages').insert({
+          sender_id: socket.userId, receiver_id,
+          booking_id: booking_id || null,
+          content, file_url: file_url || null,
+          file_name: file_name || null,
+          file_type: file_type || null,
+        }).select().single();
 
-        // Send to receiver if online
         const receiverSocketId = onlineUsers.get(receiver_id);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit('new_message', message);
-        }
+        if (receiverSocketId) io.to(receiverSocketId).emit('new_message', message);
         socket.emit('message_sent', message);
       } catch (err) {
         socket.emit('error', { message: 'Failed to send message' });
@@ -48,20 +46,19 @@ const initSocket = (io) => {
       if (receiverSocketId) io.to(receiverSocketId).emit('user_typing', { userId: socket.userId });
     });
 
-    // WebRTC signaling
     socket.on('webrtc_offer', ({ target, offer }) => {
-      const targetSocket = onlineUsers.get(target);
-      if (targetSocket) io.to(targetSocket).emit('webrtc_offer', { from: socket.userId, offer });
+      const t = onlineUsers.get(target);
+      if (t) io.to(t).emit('webrtc_offer', { from: socket.userId, offer });
     });
 
     socket.on('webrtc_answer', ({ target, answer }) => {
-      const targetSocket = onlineUsers.get(target);
-      if (targetSocket) io.to(targetSocket).emit('webrtc_answer', { from: socket.userId, answer });
+      const t = onlineUsers.get(target);
+      if (t) io.to(t).emit('webrtc_answer', { from: socket.userId, answer });
     });
 
     socket.on('webrtc_ice_candidate', ({ target, candidate }) => {
-      const targetSocket = onlineUsers.get(target);
-      if (targetSocket) io.to(targetSocket).emit('webrtc_ice_candidate', { from: socket.userId, candidate });
+      const t = onlineUsers.get(target);
+      if (t) io.to(t).emit('webrtc_ice_candidate', { from: socket.userId, candidate });
     });
 
     socket.on('disconnect', () => {

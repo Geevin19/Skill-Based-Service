@@ -13,7 +13,7 @@ export default function Signup() {
     setLoading(true);
     try {
       await api.post('/auth/signup', form);
-      toast.success('Account created! Please check your email to verify.');
+      toast.success('Account created! You can now log in.');
       navigate('/login');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Signup failed');

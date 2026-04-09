@@ -1,16 +1,11 @@
-const db = require('../db');
+const { supabase } = require('../db');
 
 const getProfile = async (req, res) => {
   try {
-    const { id } = req.params;
-    const result = await db.query(
-      `SELECT u.id, u.email, u.role, p.*
-       FROM users u JOIN profiles p ON u.id = p.user_id
-       WHERE u.id = $1 AND u.is_active = TRUE`,
-      [id]
-    );
-    if (!result.rows[0]) return res.status(404).json({ message: 'User not found' });
-    res.json(result.rows[0]);
+    const { data: user } = await supabase.from('users').select('id, email, role').eq('id', req.params.id).eq('is_active', true).single();
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    const { data: profile } = await supabase.from('profiles').select('*').eq('user_id', req.params.id).single();
+    res.json({ ...user, ...profile });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -21,35 +16,23 @@ const updateProfile = async (req, res) => {
     const { name, bio, location, timezone, skills, experience_years, hourly_rate, certifications, portfolio, social_links } = req.body;
     const avatar_url = req.file ? `/uploads/${req.file.filename}` : undefined;
 
-    const fields = [];
-    const values = [];
-    let idx = 1;
+    const updates = {};
+    if (name !== undefined) updates.name = name;
+    if (bio !== undefined) updates.bio = bio;
+    if (location !== undefined) updates.location = location;
+    if (timezone !== undefined) updates.timezone = timezone;
+    if (skills !== undefined) updates.skills = Array.isArray(skills) ? skills : [skills];
+    if (experience_years !== undefined) updates.experience_years = parseInt(experience_years);
+    if (hourly_rate !== undefined) updates.hourly_rate = parseFloat(hourly_rate);
+    if (certifications !== undefined) updates.certifications = typeof certifications === 'string' ? JSON.parse(certifications) : certifications;
+    if (portfolio !== undefined) updates.portfolio = typeof portfolio === 'string' ? JSON.parse(portfolio) : portfolio;
+    if (social_links !== undefined) updates.social_links = typeof social_links === 'string' ? JSON.parse(social_links) : social_links;
+    if (avatar_url) updates.avatar_url = avatar_url;
+    updates.updated_at = new Date().toISOString();
 
-    const addField = (col, val) => {
-      if (val !== undefined) { fields.push(`${col} = $${idx++}`); values.push(val); }
-    };
-
-    addField('name', name);
-    addField('bio', bio);
-    addField('location', location);
-    addField('timezone', timezone);
-    addField('skills', skills);
-    addField('experience_years', experience_years);
-    addField('hourly_rate', hourly_rate);
-    addField('certifications', certifications ? JSON.stringify(certifications) : undefined);
-    addField('portfolio', portfolio ? JSON.stringify(portfolio) : undefined);
-    addField('social_links', social_links ? JSON.stringify(social_links) : undefined);
-    if (avatar_url) addField('avatar_url', avatar_url);
-    addField('updated_at', new Date());
-
-    if (!fields.length) return res.status(400).json({ message: 'No fields to update' });
-
-    values.push(req.user.id);
-    const result = await db.query(
-      `UPDATE profiles SET ${fields.join(', ')} WHERE user_id = $${idx} RETURNING *`,
-      values
-    );
-    res.json(result.rows[0]);
+    const { data, error } = await supabase.from('profiles').update(updates).eq('user_id', req.user.id).select().single();
+    if (error) throw error;
+    res.json(data);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
@@ -60,10 +43,9 @@ const switchRole = async (req, res) => {
   try {
     const { role } = req.body;
     if (!['mentor', 'learner'].includes(role)) return res.status(400).json({ message: 'Invalid role' });
-
-    await db.query('UPDATE users SET role = $1 WHERE id = $2', [role, req.user.id]);
+    await supabase.from('users').update({ role }).eq('id', req.user.id);
     res.json({ message: `Role switched to ${role}` });
-  } catch (err) {
+  } catch {
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -71,44 +53,27 @@ const switchRole = async (req, res) => {
 const getMentors = async (req, res) => {
   try {
     const { skill, min_rating, max_price, search, page = 1, limit = 12 } = req.query;
-    const offset = (page - 1) * limit;
+    const from = (page - 1) * limit;
+    const to = from + parseInt(limit) - 1;
 
-    let conditions = [`u.role = 'mentor'`, `u.is_active = TRUE`, `p.is_mentor_approved = TRUE`];
-    const values = [];
-    let idx = 1;
+    let query = supabase.from('profiles')
+      .select(`*, users!inner(id, email, role)`, { count: 'exact' })
+      .eq('users.role', 'mentor')
+      .eq('users.is_active', true)
+      .eq('is_mentor_approved', true)
+      .range(from, to)
+      .order('avg_rating', { ascending: false });
 
-    if (skill) { conditions.push(`$${idx++} = ANY(p.skills)`); values.push(skill); }
-    if (min_rating) { conditions.push(`p.avg_rating >= $${idx++}`); values.push(min_rating); }
-    if (max_price) { conditions.push(`p.hourly_rate <= $${idx++}`); values.push(max_price); }
-    if (search) {
-      conditions.push(`(p.name ILIKE $${idx} OR p.bio ILIKE $${idx})`);
-      values.push(`%${search}%`); idx++;
-    }
+    if (min_rating) query = query.gte('avg_rating', parseFloat(min_rating));
+    if (max_price) query = query.lte('hourly_rate', parseFloat(max_price));
+    if (search) query = query.or(`name.ilike.%${search}%,bio.ilike.%${search}%`);
+    if (skill) query = query.contains('skills', [skill]);
 
-    const where = conditions.join(' AND ');
-    values.push(limit, offset);
+    const { data, error, count } = await query;
+    if (error) throw error;
 
-    const result = await db.query(
-      `SELECT u.id, u.email, u.role, p.name, p.bio, p.avatar_url, p.skills,
-              p.experience_years, p.hourly_rate, p.avg_rating, p.total_reviews, p.total_sessions
-       FROM users u JOIN profiles p ON u.id = p.user_id
-       WHERE ${where}
-       ORDER BY p.avg_rating DESC
-       LIMIT $${idx++} OFFSET $${idx}`,
-      values
-    );
-
-    const countResult = await db.query(
-      `SELECT COUNT(*) FROM users u JOIN profiles p ON u.id = p.user_id WHERE ${where}`,
-      values.slice(0, -2)
-    );
-
-    res.json({
-      mentors: result.rows,
-      total: parseInt(countResult.rows[0].count),
-      page: parseInt(page),
-      pages: Math.ceil(countResult.rows[0].count / limit),
-    });
+    const mentors = (data || []).map(p => ({ ...p, id: p.users?.id, email: p.users?.email, role: p.users?.role }));
+    res.json({ mentors, total: count || 0, page: parseInt(page), pages: Math.ceil((count || 0) / limit) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
@@ -117,13 +82,9 @@ const getMentors = async (req, res) => {
 
 const getAvailability = async (req, res) => {
   try {
-    const { id } = req.params;
-    const result = await db.query(
-      'SELECT * FROM availability WHERE mentor_id = $1 ORDER BY day_of_week, start_time',
-      [id]
-    );
-    res.json(result.rows);
-  } catch (err) {
+    const { data } = await supabase.from('availability').select('*').eq('mentor_id', req.params.id).order('day_of_week').order('start_time');
+    res.json(data || []);
+  } catch {
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -131,17 +92,13 @@ const getAvailability = async (req, res) => {
 const setAvailability = async (req, res) => {
   try {
     const { slots } = req.body;
-    await db.query('DELETE FROM availability WHERE mentor_id = $1', [req.user.id]);
-
-    for (const slot of slots) {
-      await db.query(
-        `INSERT INTO availability (mentor_id, day_of_week, start_time, end_time, is_recurring, specific_date)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [req.user.id, slot.day_of_week, slot.start_time, slot.end_time, slot.is_recurring ?? true, slot.specific_date || null]
-      );
+    await supabase.from('availability').delete().eq('mentor_id', req.user.id);
+    if (slots?.length) {
+      const rows = slots.map(s => ({ mentor_id: req.user.id, day_of_week: s.day_of_week, start_time: s.start_time, end_time: s.end_time, is_recurring: s.is_recurring ?? true, specific_date: s.specific_date || null }));
+      await supabase.from('availability').insert(rows);
     }
     res.json({ message: 'Availability updated' });
-  } catch (err) {
+  } catch {
     res.status(500).json({ message: 'Server error' });
   }
 };

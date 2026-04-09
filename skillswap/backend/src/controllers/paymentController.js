@@ -1,34 +1,27 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const db = require('../db');
+const { supabase } = require('../db');
 const { createNotification } = require('../utils/notifications');
 
-const PLATFORM_FEE_PERCENT = 0.1; // 10%
+const PLATFORM_FEE = 0.1;
 
 const createPaymentIntent = async (req, res) => {
   try {
     const { booking_id } = req.body;
+    const { data: booking } = await supabase.from('bookings').select('*').eq('id', booking_id).eq('learner_id', req.user.id).single();
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
 
-    const booking = await db.query(
-      'SELECT * FROM bookings WHERE id = $1 AND learner_id = $2',
-      [booking_id, req.user.id]
-    );
-    if (!booking.rows[0]) return res.status(404).json({ message: 'Booking not found' });
-
-    const b = booking.rows[0];
-    const amountCents = Math.round(b.price * 100);
-
+    const amountCents = Math.round(booking.price * 100);
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: amountCents,
-      currency: 'usd',
-      metadata: { booking_id, learner_id: req.user.id, mentor_id: b.mentor_id },
+      amount: amountCents, currency: 'usd',
+      metadata: { booking_id, learner_id: req.user.id, mentor_id: booking.mentor_id },
     });
 
-    const fee = b.price * PLATFORM_FEE_PERCENT;
-    await db.query(
-      `INSERT INTO payments (booking_id, payer_id, payee_id, amount, platform_fee, net_amount, stripe_payment_intent_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [booking_id, req.user.id, b.mentor_id, b.price, fee, b.price - fee, paymentIntent.id]
-    );
+    const fee = booking.price * PLATFORM_FEE;
+    await supabase.from('payments').insert({
+      booking_id, payer_id: req.user.id, payee_id: booking.mentor_id,
+      amount: booking.price, platform_fee: fee, net_amount: booking.price - fee,
+      stripe_payment_intent_id: paymentIntent.id,
+    });
 
     res.json({ clientSecret: paymentIntent.client_secret });
   } catch (err) {
@@ -38,11 +31,9 @@ const createPaymentIntent = async (req, res) => {
 };
 
 const stripeWebhook = async (req, res) => {
-  const sig = req.headers['stripe-signature'];
   let event;
-
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     return res.status(400).json({ message: `Webhook error: ${err.message}` });
   }
@@ -50,18 +41,9 @@ const stripeWebhook = async (req, res) => {
   if (event.type === 'payment_intent.succeeded') {
     const pi = event.data.object;
     const { booking_id, mentor_id } = pi.metadata;
-
-    await db.query(
-      `UPDATE payments SET status='completed', updated_at=NOW()
-       WHERE stripe_payment_intent_id = $1`,
-      [pi.id]
-    );
-    await db.query(
-      `UPDATE bookings SET status='confirmed', updated_at=NOW() WHERE id = $1`,
-      [booking_id]
-    );
-    await createNotification(mentor_id, 'payment', 'Payment Received',
-      'A learner has paid for your session', { booking_id });
+    await supabase.from('payments').update({ status: 'completed' }).eq('stripe_payment_intent_id', pi.id);
+    await supabase.from('bookings').update({ status: 'confirmed' }).eq('id', booking_id);
+    await createNotification(mentor_id, 'payment', 'Payment Received', 'A learner has paid for your session', { booking_id });
   }
 
   res.json({ received: true });
@@ -69,26 +51,19 @@ const stripeWebhook = async (req, res) => {
 
 const getEarnings = async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT
-         SUM(net_amount) as total_earnings,
-         COUNT(*) as total_transactions,
-         SUM(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN net_amount ELSE 0 END) as monthly_earnings
-       FROM payments WHERE payee_id = $1 AND status = 'completed'`,
-      [req.user.id]
-    );
+    const { data: payments } = await supabase.from('payments')
+      .select('*, bookings(scheduled_at), payer:profiles!payments_payer_id_fkey(name)')
+      .eq('payee_id', req.user.id).eq('status', 'completed')
+      .order('created_at', { ascending: false });
 
-    const transactions = await db.query(
-      `SELECT p.*, b.scheduled_at, lp.name as learner_name
-       FROM payments p
-       LEFT JOIN bookings b ON p.booking_id = b.id
-       LEFT JOIN profiles lp ON p.payer_id = lp.user_id
-       WHERE p.payee_id = $1 AND p.status = 'completed'
-       ORDER BY p.created_at DESC LIMIT 20`,
-      [req.user.id]
-    );
+    const total = (payments || []).reduce((s, p) => s + parseFloat(p.net_amount), 0);
+    const monthly = (payments || []).filter(p => new Date(p.created_at) > new Date(Date.now() - 30 * 86400000))
+      .reduce((s, p) => s + parseFloat(p.net_amount), 0);
 
-    res.json({ summary: result.rows[0], transactions: transactions.rows });
+    res.json({
+      summary: { total_earnings: total, monthly_earnings: monthly, total_transactions: payments?.length || 0 },
+      transactions: (payments || []).slice(0, 20).map(p => ({ ...p, learner_name: p.payer?.name, scheduled_at: p.bookings?.scheduled_at })),
+    });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }

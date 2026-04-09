@@ -1,15 +1,9 @@
-const { Pool } = require('pg');
+const { createClient } = require('@supabase/supabase-js');
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-});
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY,
+  { auth: { persistSession: false } }
+);
 
-pool.on('error', (err) => {
-  console.error('Unexpected DB error', err);
-});
-
-module.exports = {
-  query: (text, params) => pool.query(text, params),
-  pool,
-};
+module.exports = { supabase };

@@ -1,23 +1,30 @@
-const db = require('../db');
+const { supabase } = require('../db');
 
 const getConversations = async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT DISTINCT ON (other_user)
-         CASE WHEN m.sender_id = $1 THEN m.receiver_id ELSE m.sender_id END as other_user,
-         p.name, p.avatar_url,
-         m.content as last_message, m.created_at,
-         COUNT(CASE WHEN m.receiver_id = $1 AND m.is_read = FALSE THEN 1 END) OVER (
-           PARTITION BY CASE WHEN m.sender_id = $1 THEN m.receiver_id ELSE m.sender_id END
-         ) as unread_count
-       FROM messages m
-       JOIN profiles p ON p.user_id = CASE WHEN m.sender_id = $1 THEN m.receiver_id ELSE m.sender_id END
-       WHERE m.sender_id = $1 OR m.receiver_id = $1
-       ORDER BY other_user, m.created_at DESC`,
-      [req.user.id]
-    );
-    res.json(result.rows);
+    const { data: sent } = await supabase.from('messages').select('receiver_id').eq('sender_id', req.user.id);
+    const { data: received } = await supabase.from('messages').select('sender_id').eq('receiver_id', req.user.id);
+
+    const userIds = [...new Set([
+      ...(sent || []).map(m => m.receiver_id),
+      ...(received || []).map(m => m.sender_id),
+    ])].filter(id => id !== req.user.id);
+
+    const conversations = await Promise.all(userIds.map(async (otherId) => {
+      const { data: profile } = await supabase.from('profiles').select('name, avatar_url').eq('user_id', otherId).single();
+      const { data: lastMsg } = await supabase.from('messages')
+        .select('content, created_at')
+        .or(`and(sender_id.eq.${req.user.id},receiver_id.eq.${otherId}),and(sender_id.eq.${otherId},receiver_id.eq.${req.user.id})`)
+        .order('created_at', { ascending: false }).limit(1).single();
+      const { count } = await supabase.from('messages')
+        .select('*', { count: 'exact', head: true })
+        .eq('sender_id', otherId).eq('receiver_id', req.user.id).eq('is_read', false);
+      return { other_user: otherId, name: profile?.name, avatar_url: profile?.avatar_url, last_message: lastMsg?.content, created_at: lastMsg?.created_at, unread_count: count || 0 };
+    }));
+
+    res.json(conversations);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -26,23 +33,20 @@ const getMessages = async (req, res) => {
   try {
     const { userId } = req.params;
     const { page = 1, limit = 50 } = req.query;
-    const offset = (page - 1) * limit;
+    const from = (page - 1) * limit;
+    const to = from + parseInt(limit) - 1;
 
-    await db.query(
-      'UPDATE messages SET is_read = TRUE WHERE sender_id = $1 AND receiver_id = $2',
-      [userId, req.user.id]
-    );
+    await supabase.from('messages').update({ is_read: true }).eq('sender_id', userId).eq('receiver_id', req.user.id);
 
-    const result = await db.query(
-      `SELECT m.*, p.name as sender_name, p.avatar_url as sender_avatar
-       FROM messages m JOIN profiles p ON m.sender_id = p.user_id
-       WHERE (m.sender_id = $1 AND m.receiver_id = $2)
-          OR (m.sender_id = $2 AND m.receiver_id = $1)
-       ORDER BY m.created_at DESC
-       LIMIT $3 OFFSET $4`,
-      [req.user.id, userId, limit, offset]
-    );
-    res.json(result.rows.reverse());
+    const { data, error } = await supabase.from('messages')
+      .select('*, profiles!messages_sender_id_fkey(name, avatar_url)')
+      .or(`and(sender_id.eq.${req.user.id},receiver_id.eq.${userId}),and(sender_id.eq.${userId},receiver_id.eq.${req.user.id})`)
+      .order('created_at', { ascending: true })
+      .range(from, to);
+
+    if (error) throw error;
+    const messages = (data || []).map(m => ({ ...m, sender_name: m.profiles?.name, sender_avatar: m.profiles?.avatar_url }));
+    res.json(messages);
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -55,12 +59,12 @@ const sendMessage = async (req, res) => {
     const file_name = req.file ? req.file.originalname : null;
     const file_type = req.file ? req.file.mimetype : null;
 
-    const result = await db.query(
-      `INSERT INTO messages (sender_id, receiver_id, booking_id, content, file_url, file_name, file_type)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [req.user.id, receiver_id, booking_id || null, content, file_url, file_name, file_type]
-    );
-    res.status(201).json(result.rows[0]);
+    const { data, error } = await supabase.from('messages').insert({
+      sender_id: req.user.id, receiver_id, booking_id: booking_id || null,
+      content, file_url, file_name, file_type,
+    }).select().single();
+    if (error) throw error;
+    res.status(201).json(data);
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
