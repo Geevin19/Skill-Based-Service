@@ -56,11 +56,20 @@ const getMentors = async (req, res) => {
     const from = (page - 1) * limit;
     const to = from + parseInt(limit) - 1;
 
+    // First get all mentor user IDs
+    const { data: mentorUsers } = await supabase
+      .from('users')
+      .select('id')
+      .eq('role', 'mentor')
+      .eq('is_active', true);
+
+    if (!mentorUsers?.length) return res.json({ mentors: [], total: 0, page: parseInt(page), pages: 0 });
+
+    const mentorIds = mentorUsers.map(u => u.id);
+
     let query = supabase.from('profiles')
-      .select(`*, users!inner(id, email, role)`, { count: 'exact' })
-      .eq('users.role', 'mentor')
-      .eq('users.is_active', true)
-      .eq('is_mentor_approved', true)
+      .select('*, users!inner(id, email, role)', { count: 'exact' })
+      .in('user_id', mentorIds)
       .range(from, to)
       .order('avg_rating', { ascending: false });
 
@@ -72,7 +81,13 @@ const getMentors = async (req, res) => {
     const { data, error, count } = await query;
     if (error) throw error;
 
-    const mentors = (data || []).map(p => ({ ...p, id: p.users?.id, email: p.users?.email, role: p.users?.role }));
+    const mentors = (data || []).map(p => ({
+      ...p,
+      id: p.users?.id || p.user_id,
+      email: p.users?.email,
+      role: p.users?.role,
+    }));
+
     res.json({ mentors, total: count || 0, page: parseInt(page), pages: Math.ceil((count || 0) / limit) });
   } catch (err) {
     console.error(err);
