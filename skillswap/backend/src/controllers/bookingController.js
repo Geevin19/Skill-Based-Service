@@ -1,6 +1,6 @@
 const { supabase } = require('../db');
 const { createNotification } = require('../utils/notifications');
-const { sendBookingConfirmation } = require('../utils/email');
+const { sendBookingConfirmation, sendNewBookingToMentor, sendBookingCancelled, sendAdminNewBooking } = require('../utils/email');
 
 const createBooking = async (req, res) => {
   try {
@@ -17,6 +17,12 @@ const createBooking = async (req, res) => {
 
     await createNotification(session.mentor_id, 'booking_request', 'New Booking Request',
       `You have a new booking request for "${session.title}"`, { booking_id: booking.id });
+
+    // Email mentor about new booking
+    const { data: mentorUser } = await supabase.from('users').select('email').eq('id', session.mentor_id).single();
+    const { data: learnerProfile } = await supabase.from('profiles').select('name').eq('user_id', req.user.id).single();
+    if (mentorUser) sendNewBookingToMentor(mentorUser.email, booking, learnerProfile?.name || 'A learner').catch(() => {});
+    sendAdminNewBooking(booking).catch(() => {});
 
     res.status(201).json(booking);
   } catch (err) {
@@ -81,6 +87,13 @@ const updateBookingStatus = async (req, res) => {
 
     const updates = { status, updated_at: new Date().toISOString() };
     if (meeting_link) updates.meeting_link = meeting_link;
+
+    // Auto-generate Google Meet link on confirmation
+    if (status === 'confirmed' && !existing.meeting_link) {
+      const roomId = `skillswap-${existing.id.slice(0, 8)}`;
+      updates.meeting_link = `https://meet.google.com/${roomId}`;
+    }
+
     if (status === 'cancelled') { updates.cancelled_by = req.user.id; updates.cancel_reason = cancel_reason; }
 
     const { data, error } = await supabase.from('bookings').update(updates).eq('id', req.params.id).select().single();
@@ -91,7 +104,12 @@ const updateBookingStatus = async (req, res) => {
 
     if (status === 'confirmed') {
       const { data: learner } = await supabase.from('users').select('email').eq('id', existing.learner_id).single();
-      if (learner) try { await sendBookingConfirmation(learner.email, data); } catch (_) {}
+      if (learner) sendBookingConfirmation(learner.email, data).catch(() => {});
+    }
+    if (status === 'cancelled') {
+      const notifyEmail = req.user.id === existing.learner_id ? existing.mentor_id : existing.learner_id;
+      const { data: notifyUser } = await supabase.from('users').select('email').eq('id', notifyEmail).single();
+      if (notifyUser) sendBookingCancelled(notifyUser.email, data).catch(() => {});
     }
     res.json(data);
   } catch (err) {

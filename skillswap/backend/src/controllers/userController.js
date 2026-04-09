@@ -5,7 +5,8 @@ const getProfile = async (req, res) => {
     const { data: user } = await supabase.from('users').select('id, email, role').eq('id', req.params.id).eq('is_active', true).single();
     if (!user) return res.status(404).json({ message: 'User not found' });
     const { data: profile } = await supabase.from('profiles').select('*').eq('user_id', req.params.id).single();
-    res.json({ ...user, ...profile });
+    // Always include user_id so frontend can use it reliably
+    res.json({ ...user, ...(profile || {}), user_id: req.params.id });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -97,7 +98,17 @@ const getMentors = async (req, res) => {
 
 const getAvailability = async (req, res) => {
   try {
-    const { data } = await supabase.from('availability').select('*').eq('mentor_id', req.params.id).order('day_of_week').order('start_time');
+    const { session_id } = req.query;
+    // Try with session_id filter first, fallback to all mentor slots
+    let query = supabase.from('availability').select('*').eq('mentor_id', req.params.id).order('day_of_week').order('start_time');
+    if (session_id) {
+      // Try session-specific first
+      const { data: sessionSlots } = await supabase.from('availability').select('*')
+        .eq('mentor_id', req.params.id).eq('session_id', session_id).order('day_of_week').order('start_time');
+      // If session has specific slots use them, otherwise fall back to general slots
+      if (sessionSlots && sessionSlots.length > 0) return res.json(sessionSlots);
+    }
+    const { data } = await query;
     res.json(data || []);
   } catch {
     res.status(500).json({ message: 'Server error' });
@@ -106,14 +117,44 @@ const getAvailability = async (req, res) => {
 
 const setAvailability = async (req, res) => {
   try {
-    const { slots } = req.body;
-    await supabase.from('availability').delete().eq('mentor_id', req.user.id);
+    const { slots, session_id } = req.body;
+    let delQuery = supabase.from('availability').delete().eq('mentor_id', req.user.id);
+    if (session_id) {
+      // Try to delete session-specific slots, ignore error if column doesn't exist
+      const { error } = await supabase.from('availability').delete()
+        .eq('mentor_id', req.user.id).eq('session_id', session_id);
+      if (error && error.message.includes('session_id')) {
+        // Column doesn't exist yet, delete all mentor slots
+        await supabase.from('availability').delete().eq('mentor_id', req.user.id);
+      }
+    } else {
+      await delQuery;
+    }
+
     if (slots?.length) {
-      const rows = slots.map(s => ({ mentor_id: req.user.id, day_of_week: s.day_of_week, start_time: s.start_time, end_time: s.end_time, is_recurring: s.is_recurring ?? true, specific_date: s.specific_date || null }));
-      await supabase.from('availability').insert(rows);
+      const rows = slots.map(s => {
+        const row = {
+          mentor_id: req.user.id,
+          day_of_week: s.day_of_week,
+          start_time: s.start_time,
+          end_time: s.end_time,
+          is_recurring: s.is_recurring ?? true,
+          specific_date: s.specific_date || null,
+        };
+        if (session_id) row.session_id = session_id;
+        return row;
+      });
+
+      const { error } = await supabase.from('availability').insert(rows);
+      if (error && error.message.includes('session_id')) {
+        // Column doesn't exist, insert without session_id
+        const rowsNoSession = rows.map(({ session_id: _, ...r }) => r);
+        await supabase.from('availability').insert(rowsNoSession);
+      }
     }
     res.json({ message: 'Availability updated' });
-  } catch {
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ message: 'Server error' });
   }
 };

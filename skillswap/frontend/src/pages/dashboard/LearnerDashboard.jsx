@@ -6,12 +6,14 @@ import { useAuth } from '../../context/AuthContext';
 import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import ReviewModal from './ReviewModal';
+import SessionDetailModal from './SessionDetailModal';
 
 export default function LearnerDashboard() {
   const { user } = useAuth();
   const [bookings, setBookings] = useState([]);
   const [tab, setTab] = useState('upcoming');
   const [reviewBooking, setReviewBooking] = useState(null);
+  const [detailBooking, setDetailBooking] = useState(null);
 
   useEffect(() => {
     api.get('/bookings?role=learner').then(res => setBookings(res.data));
@@ -40,6 +42,7 @@ export default function LearnerDashboard() {
             <p className="text-gray-500">Welcome back, {user?.profile?.name}</p>
           </div>
           <Link to="/mentors" className="btn-primary">Find Mentors</Link>
+          <Link to="/sessions" className="btn-secondary ml-2">Browse Sessions</Link>
         </div>
 
         {/* Stats */}
@@ -72,10 +75,12 @@ export default function LearnerDashboard() {
           {filtered.length === 0 ? (
             <div className="text-center py-12 text-gray-500">No {tab} bookings.</div>
           ) : filtered.map(b => (
-            <BookingCard key={b.id} booking={b}
-              onCancel={tab === 'upcoming' ? handleCancel : undefined}
-              onComplete={tab === 'upcoming' && b.status === 'confirmed' ? (id) => setReviewBooking(b) : undefined}
-            />
+            <div key={b.id} className="cursor-pointer" onClick={() => setDetailBooking(b)}>
+              <BookingCard booking={b}
+                onCancel={tab === 'upcoming' ? (e) => { e.stopPropagation?.(); handleCancel(b.id); } : undefined}
+                onComplete={tab === 'upcoming' && b.status === 'confirmed' ? (id) => { setReviewBooking(b); } : undefined}
+              />
+            </div>
           ))}
         </div>
       </div>
@@ -87,6 +92,13 @@ export default function LearnerDashboard() {
             setBookings(prev => prev.map(b => b.id === reviewBooking.id ? { ...b, status: 'completed' } : b));
             setReviewBooking(null);
           }} />
+      )}
+
+      {detailBooking && (
+        <SessionDetailModal
+          booking={detailBooking}
+          onClose={() => setDetailBooking(null)}
+        />
       )}
     </div>
   );

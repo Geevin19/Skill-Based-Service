@@ -10,6 +10,7 @@ import ForgotPassword from './pages/auth/ForgotPassword';
 import ResetPassword from './pages/auth/ResetPassword';
 import MentorList from './pages/mentors/MentorList';
 import MentorProfile from './pages/mentors/MentorProfile';
+import SessionsList from './pages/sessions/SessionsList';
 import SessionDetail from './pages/sessions/SessionDetail';
 import LearnerDashboard from './pages/dashboard/LearnerDashboard';
 import MentorDashboard from './pages/dashboard/MentorDashboard';
@@ -32,6 +33,7 @@ export default function App() {
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/mentors" element={<MentorList />} />
           <Route path="/mentors/:id" element={<MentorProfile />} />
+          <Route path="/sessions" element={<SessionsList />} />
           <Route path="/sessions/:id" element={<SessionDetail />} />
 
           <Route element={<ProtectedRoute />}>

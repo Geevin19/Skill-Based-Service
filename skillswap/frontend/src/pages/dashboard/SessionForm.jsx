@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import api from '../../utils/api';
+import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
 
 export default function SessionForm({ onClose, onCreated }) {
+  const { user } = useAuth();
   const [form, setForm] = useState({
     title: '', description: '', category: '', session_type: '1-on-1',
     duration_minutes: 60, price: '', max_participants: 1,
@@ -28,20 +30,23 @@ export default function SessionForm({ onClose, onCreated }) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
       <div className="bg-white rounded-2xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <h2 className="text-lg font-bold text-gray-900 mb-4">Create Session</h2>
+        <h2 className="text-lg font-bold text-gray-900 mb-1">Create Session</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Mentor: <span className="font-medium text-blue-600">{user?.profile?.name || user?.email}</span>
+        </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Title</label>
-            <input className="input" value={form.title} onChange={e => set('title', e.target.value)} required />
+            <input className="input" placeholder="e.g. Python for Beginners" value={form.title} onChange={e => set('title', e.target.value)} required />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-            <textarea className="input resize-none" rows={3} value={form.description} onChange={e => set('description', e.target.value)} />
+            <textarea className="input resize-none" rows={3} placeholder="What will learners gain from this session?" value={form.description} onChange={e => set('description', e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-              <input className="input" value={form.category} onChange={e => set('category', e.target.value)} />
+              <input className="input" placeholder="e.g. Programming" value={form.category} onChange={e => set('category', e.target.value)} />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>

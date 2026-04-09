@@ -26,7 +26,7 @@ const getSessions = async (req, res) => {
     const to = from + parseInt(limit) - 1;
 
     let query = supabase.from('sessions')
-      .select('*, profiles!inner(name, avatar_url, avg_rating)')
+      .select('*')
       .eq('is_active', true)
       .range(from, to)
       .order('created_at', { ascending: false });
@@ -38,12 +38,14 @@ const getSessions = async (req, res) => {
     const { data, error } = await query;
     if (error) throw error;
 
-    const sessions = (data || []).map(s => ({
-      ...s,
-      mentor_name: s.profiles?.name,
-      avatar_url: s.profiles?.avatar_url,
-      avg_rating: s.profiles?.avg_rating,
+    // Enrich with mentor profile
+    const sessions = await Promise.all((data || []).map(async (s) => {
+      const { data: profile } = await supabase.from('profiles')
+        .select('name, avatar_url, avg_rating')
+        .eq('user_id', s.mentor_id).single();
+      return { ...s, mentor_name: profile?.name, avatar_url: profile?.avatar_url, avg_rating: profile?.avg_rating };
     }));
+
     res.json(sessions);
   } catch (err) {
     console.error(err);
@@ -53,11 +55,12 @@ const getSessions = async (req, res) => {
 
 const getSession = async (req, res) => {
   try {
-    const { data, error } = await supabase.from('sessions')
-      .select('*, profiles!inner(name, avatar_url, avg_rating, bio)')
-      .eq('id', req.params.id).single();
+    const { data, error } = await supabase.from('sessions').select('*').eq('id', req.params.id).single();
     if (error || !data) return res.status(404).json({ message: 'Session not found' });
-    res.json({ ...data, mentor_name: data.profiles?.name, avatar_url: data.profiles?.avatar_url });
+    const { data: profile } = await supabase.from('profiles')
+      .select('name, avatar_url, avg_rating, bio')
+      .eq('user_id', data.mentor_id).single();
+    res.json({ ...data, mentor_name: profile?.name, avatar_url: profile?.avatar_url, avg_rating: profile?.avg_rating });
   } catch {
     res.status(500).json({ message: 'Server error' });
   }

@@ -6,6 +6,8 @@ import { useAuth } from '../../context/AuthContext';
 import { formatCurrency } from '../../utils/helpers';
 import toast from 'react-hot-toast';
 import SessionForm from './SessionForm';
+import AvailabilityManager from './AvailabilityManager';
+import MentorSessionCard from './MentorSessionCard';
 
 export default function MentorDashboard() {
   const { user } = useAuth();
@@ -14,12 +16,20 @@ export default function MentorDashboard() {
   const [earnings, setEarnings] = useState(null);
   const [tab, setTab] = useState('bookings');
   const [showSessionForm, setShowSessionForm] = useState(false);
+  const [showAvailability, setShowAvailability] = useState(false);
+  const [availabilitySession, setAvailabilitySession] = useState(null);
+
+  const handleSetAvailability = (session) => {
+    setAvailabilitySession(session);
+    setShowAvailability(true);
+  };
 
   useEffect(() => {
+    if (!user?.id) return;
     api.get('/bookings?role=mentor').then(res => setBookings(res.data));
     api.get(`/sessions?mentor_id=${user.id}`).then(res => setSessions(res.data));
     api.get('/payments/earnings').then(res => setEarnings(res.data));
-  }, []);
+  }, [user?.id]);
 
   const handleConfirm = async (id) => {
     try {
@@ -46,7 +56,10 @@ export default function MentorDashboard() {
             <h1 className="text-2xl font-bold text-gray-900">Mentor Dashboard</h1>
             <p className="text-gray-500">Welcome, {user?.profile?.name}</p>
           </div>
-          <button onClick={() => setShowSessionForm(true)} className="btn-primary">+ New Session</button>
+          <div className="flex gap-2">
+            <button onClick={() => setShowAvailability(true)} className="btn-secondary">📅 Set Availability</button>
+            <button onClick={() => setShowSessionForm(true)} className="btn-primary">+ New Session</button>
+          </div>
         </div>
 
         {/* Earnings Stats */}
@@ -84,31 +97,49 @@ export default function MentorDashboard() {
 
         {tab === 'bookings' && (
           <div className="space-y-4">
-            {bookings.length === 0 ? <p className="text-center py-12 text-gray-500">No bookings yet.</p>
-              : bookings.map(b => (
-                <div key={b.id}>
-                  <BookingCard booking={b} onCancel={handleCancel} />
-                  {b.status === 'pending' && (
-                    <button onClick={() => handleConfirm(b.id)} className="btn-primary text-sm mt-2">Confirm Booking</button>
-                  )}
-                </div>
+            {/* Pending requests highlighted */}
+            {bookings.filter(b => b.status === 'pending').length > 0 && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 mb-2">
+                <p className="text-sm font-semibold text-yellow-800 mb-3">
+                  🔔 {bookings.filter(b => b.status === 'pending').length} pending booking request(s)
+                </p>
+                {bookings.filter(b => b.status === 'pending').map(b => (
+                  <div key={b.id} className="bg-white rounded-xl p-4 border border-yellow-200 mb-2">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <p className="font-medium text-gray-900">{b.session_title || 'Session'}</p>
+                        <p className="text-sm text-gray-500">from <strong>{b.learner_name}</strong></p>
+                        <p className="text-sm text-gray-500">{new Date(b.scheduled_at).toLocaleString('en-IN')}</p>
+                        {b.notes && <p className="text-xs text-gray-400 mt-1 italic">"{b.notes}"</p>}
+                      </div>
+                      <div className="flex gap-2 ml-4">
+                        <button onClick={() => handleConfirm(b.id)} className="btn-primary text-xs py-1.5 px-3">✓ Confirm</button>
+                        <button onClick={() => handleCancel(b.id)} className="btn-danger text-xs py-1.5 px-3">✗ Decline</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {bookings.filter(b => b.status !== 'pending').length === 0 && bookings.filter(b => b.status === 'pending').length === 0
+              ? <p className="text-center py-12 text-gray-500">No bookings yet.</p>
+              : bookings.filter(b => b.status !== 'pending').map(b => (
+                <BookingCard key={b.id} booking={b} onCancel={handleCancel} />
               ))}
           </div>
         )}
 
         {tab === 'sessions' && (
           <div className="space-y-3">
-            {sessions.map(s => (
-              <div key={s.id} className="card flex items-center justify-between">
-                <div>
-                  <h3 className="font-medium text-gray-900">{s.title}</h3>
-                  <p className="text-sm text-gray-500">{s.duration_minutes} min · {formatCurrency(s.price)} · {s.session_type}</p>
-                </div>
-                <span className={`badge ${s.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                  {s.is_active ? 'Active' : 'Inactive'}
-                </span>
-              </div>
-            ))}
+            {sessions.length === 0
+              ? <p className="text-center py-12 text-gray-500">No sessions yet. Click "+ New Session" to create one.</p>
+              : sessions.map(s => (
+                <MentorSessionCard
+                  key={s.id}
+                  session={s}
+                  onSetAvailability={handleSetAvailability}
+                />
+              ))}
           </div>
         )}
 
@@ -131,6 +162,14 @@ export default function MentorDashboard() {
         <SessionForm
           onClose={() => setShowSessionForm(false)}
           onCreated={(s) => { setSessions(prev => [s, ...prev]); setShowSessionForm(false); }}
+        />
+      )}
+
+      {showAvailability && (
+        <AvailabilityManager
+          mentorId={user?.id}
+          preSelectedSession={availabilitySession}
+          onClose={() => { setShowAvailability(false); setAvailabilitySession(null); }}
         />
       )}
     </div>

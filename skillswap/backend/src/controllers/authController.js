@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const { supabase } = require('../db');
 const { generateToken, generateShortToken, verifyToken } = require('../utils/jwt');
-const { sendPasswordResetEmail } = require('../utils/email');
+const { sendWelcomeEmail, sendPasswordResetEmail, sendAdminNewUser } = require('../utils/email');
 
 const signup = async (req, res) => {
   try {
@@ -11,15 +11,18 @@ const signup = async (req, res) => {
     if (existing) return res.status(409).json({ message: 'Email already registered' });
 
     const hash = await bcrypt.hash(password, 12);
-    const verificationToken = generateShortToken({ email, purpose: 'verify' });
 
     const { data: user, error } = await supabase.from('users').insert({
-      email, password_hash: hash, role, is_verified: true, verification_token: null
+      email, password_hash: hash, role, is_verified: true,
     }).select('id, email, role').single();
 
     if (error) throw error;
 
     await supabase.from('profiles').insert({ user_id: user.id, name });
+
+    // Send welcome email and admin notification (non-blocking)
+    sendWelcomeEmail(email, name).catch(() => {});
+    sendAdminNewUser(name, email, role).catch(() => {});
 
     res.status(201).json({ message: 'Account created successfully. You can now log in.' });
   } catch (err) {
@@ -33,7 +36,7 @@ const login = async (req, res) => {
     const { email, password } = req.body;
 
     const { data: user } = await supabase.from('users')
-      .select('id, email, password_hash, role, is_verified, is_active')
+      .select('id, email, password_hash, role, is_active')
       .eq('email', email).single();
 
     if (!user) return res.status(401).json({ message: 'Invalid credentials' });
@@ -52,22 +55,6 @@ const login = async (req, res) => {
   }
 };
 
-const verifyEmail = async (req, res) => {
-  try {
-    const { token } = req.query;
-    const decoded = verifyToken(token);
-
-    const { data, error } = await supabase.from('users')
-      .update({ is_verified: true, verification_token: null })
-      .eq('email', decoded.email).eq('verification_token', token).select('id').single();
-
-    if (error || !data) return res.status(400).json({ message: 'Invalid or expired token' });
-    res.json({ message: 'Email verified successfully' });
-  } catch {
-    res.status(400).json({ message: 'Invalid or expired token' });
-  }
-};
-
 const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
@@ -78,7 +65,7 @@ const forgotPassword = async (req, res) => {
     const expires = new Date(Date.now() + 3600000).toISOString();
 
     await supabase.from('users').update({ reset_token: token, reset_token_expires: expires }).eq('id', user.id);
-    try { await sendPasswordResetEmail(email, token); } catch (_) {}
+    sendPasswordResetEmail(email, token).catch(() => {});
 
     res.json({ message: 'If that email exists, a reset link was sent.' });
   } catch (err) {
@@ -117,4 +104,4 @@ const getMe = async (req, res) => {
   }
 };
 
-module.exports = { signup, login, verifyEmail, forgotPassword, resetPassword, getMe };
+module.exports = { signup, login, forgotPassword, resetPassword, getMe };

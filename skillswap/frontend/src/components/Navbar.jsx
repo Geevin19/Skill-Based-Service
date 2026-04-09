@@ -30,6 +30,7 @@ export default function Navbar() {
 
           <div className="hidden md:flex items-center gap-6">
             <Link to="/mentors" className="text-gray-600 hover:text-blue-600 transition-colors">Find Mentors</Link>
+            <Link to="/sessions" className="text-gray-600 hover:text-blue-600 transition-colors">Browse Sessions</Link>
             {user && <Link to={dashboardPath} className="text-gray-600 hover:text-blue-600 transition-colors">Dashboard</Link>}
           </div>
 
@@ -78,6 +79,7 @@ export default function Navbar() {
       {menuOpen && (
         <div className="md:hidden border-t border-gray-100 bg-white px-4 py-3 space-y-2">
           <Link to="/mentors" className="block py-2 text-gray-700" onClick={() => setMenuOpen(false)}>Find Mentors</Link>
+          <Link to="/sessions" className="block py-2 text-gray-700" onClick={() => setMenuOpen(false)}>Browse Sessions</Link>
           {user && <Link to={dashboardPath} className="block py-2 text-gray-700" onClick={() => setMenuOpen(false)}>Dashboard</Link>}
         </div>
       )}
